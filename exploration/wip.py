@@ -57,6 +57,16 @@ def load_data(customers_csv: str, subscriptions_csv: str) -> tuple[pd.DataFrame,
 
 
 if __name__ == "__main__":
-    customers, subscriptions = load_data("../data/customers.csv", "../data/subscriptions.csv")
+    parser = argparse.ArgumentParser(
+        prog="wip",
+        description="read customer data, produce JSON with KPI's",
+    )
+    parser.add_argument("--customers_csv", help="CSV with customer data")
+    parser.add_argument("--subscriptions_csv", help="CSV with subscriptions data")
+
+    parsed = parser.parse_args(sys.argv[1:])
+
+    customers, subscriptions = load_data(parsed.customers_csv, parsed.subscriptions_csv)
+
     assert isinstance(customers, pd.DataFrame)
     assert isinstance(subscriptions, pd.DataFrame)

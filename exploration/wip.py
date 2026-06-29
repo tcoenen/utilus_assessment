@@ -109,7 +109,7 @@ def get_mmr(conn: DuckDBPyConnection):
     return alt.Chart(results).mark_line(interpolate="step-after").encode(x="month", y=alt.X("mmr").title("Income (euros)")).properties(width=800, title="MMR")  # Plot MMR over time
 
 
-def get_mmr(conn: DuckDBPyConnection):
+def calculate_mmr(conn: DuckDBPyConnection) -> None:
     """
     Calculate monthly recurring revenue.
     """
@@ -164,7 +164,62 @@ def get_mmr(conn: DuckDBPyConnection):
                 month
     );
     """    
-    conn.execute(SQL)    
+    conn.execute(SQL)
+
+
+def calculate_churn(conn: DuckDBPyConnection) -> None:
+    SQL = """
+    -- select entries where there is an end date, sort them by customer and end date
+    CREATE OR REPLACE TABLE churn AS (
+        WITH lagged AS (
+            SELECT
+                customer_id,
+                start_date,
+                end_date,
+                plan,
+                monthly_price,
+    
+                -- If current entry has an end date we check:
+                -- * if the current customer and the next are the same
+                -- * if a new subscription was opened quickly enough
+                -- then no churn else churn.
+                -- If current entry has no end date, also no churn.
+                CASE
+                    WHEN customer_id = lead(customer_id) OVER()
+                    THEN lead(start_date) OVER() - end_date
+                    ELSE null
+                END AS delta_t,
+                customer_id = lead(customer_id) OVER() AS has_next,
+                end_date IS NULL as no_end_date,
+    
+                -- collapsing the above into one boolean:
+                NOT ((has_next AND delta_t < 30) OR end_date IS NULL) AS is_churn
+                
+            FROM subscriptions_clean
+            ORDER BY customer_id, start_date
+        )
+        SELECT
+            customer_id,
+            start_date,
+            end_date,
+            plan,
+            monthly_price,
+            is_churn
+        FROM lagged
+        WHERE is_churn = true
+    );
+    """
+    conn.execute(SQL)
+
+
+def _no_overwrite(paths: list[pathlib.Path]) -> None:
+    """
+    Do not overwrite datafiles, exit program if existing file is to overwritten
+    """
+    for p in paths:
+        if pathlib.Path(p).exists():
+            print(f"Will not overwrite existing data file {p}")
+            sys.exit()
 
 
 if __name__ == "__main__":
@@ -175,6 +230,7 @@ if __name__ == "__main__":
     parser.add_argument("--customers_csv", help="CSV with customer data")
     parser.add_argument("--subscriptions_csv", help="CSV with subscriptions data")
     parser.add_argument("--mmr_json", help="Output filename of MMR JSON data file.")
+    parser.add_argument("--churn_json", help="Output filename of churn JSON data file.")
 
     parsed = parser.parse_args(sys.argv[1:])
     
@@ -183,11 +239,14 @@ if __name__ == "__main__":
         print(f"Will not overwrite existing data file {parsed.mmr_json}")
         sys.exit()
 
+    _no_overwrite([parsed.mmr_json, parsed.churn_json])
 
     # open in memory database (dataset is small, DuckDB is fast)
     conn = duckdb.connect(":memory:")
     load_data(conn, parsed.customers_csv, parsed.subscriptions_csv)
-    get_mmr(conn)
+    calculate_mmr(conn)
+    calculate_churn(conn)
 
     # output JSON:
     conn.execute("""COPY (SELECT * FROM mmr) TO ?;""", [parsed.mmr_json])
+    conn.execute("""COPY (SELECT * FROM churn) TO ?;""", [parsed.churn_json])
